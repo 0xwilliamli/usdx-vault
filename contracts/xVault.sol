@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/SafeERC20.sol";
 import "@openzeppelin/contracts/math/SafeMath.sol";
+import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 
 // interface GuestList {
 //   function authorized(address guest, uint256 amount) public returns (bool);
@@ -13,7 +14,7 @@ import "@openzeppelin/contracts/math/SafeMath.sol";
 interface Strategy {
   function want() external view returns (address);
   function vault() external view returns (address);
-  function estimateTotalAssets() external view returns (uint256);
+  function estimatedTotalAssets() external view returns (uint256);
   function withdraw(uint256 _amount) external returns (uint256, uint256);
   function migrate(address _newStrategy) external;
 }
@@ -23,7 +24,7 @@ interface ITreasury {
 }
 
 
-contract XVault is ERC20 {
+contract XVault is ERC20, ReentrancyGuard {
   using SafeERC20 for ERC20;
   using Address for address;
   using SafeMath for uint256;
@@ -46,7 +47,7 @@ contract XVault is ERC20 {
     uint256 totalLoss;          // Total losses that Strategy has realized for Vault
   }
 
-  uint256 public MAX_BPS = 100;
+  uint256 public MAX_BPS = 10000;
   uint256 public SECS_PER_YEAR = 60 * 60 * 24 * 36525 / 100;
 
   mapping (address => StrategyParams) public strategies;
@@ -68,6 +69,8 @@ contract XVault is ERC20 {
   uint256 public managementFee;
   uint256 public performanceFee;
 
+  event Deposit(address indexed user, uint256 amount);
+  event Withdraw(address indexed user, uint256 amount);
   event UpdateTreasury(ITreasury treasury);
   event UpdateGuardian(address guardian);
   event UpdateManagement(address management);
@@ -77,6 +80,8 @@ contract XVault is ERC20 {
   event StrategyRemovedFromQueue(address strategy);
   event UpdateManangementFee(uint256 fee);
   event EmergencyShutdown(bool active);
+  event UpdateWithdrawalQueue(address[] queue);
+  event StrategyAddedToQueue(address strategy);
   event StrategyReported(
     address indexed strategy,
     uint256 gain,
@@ -119,7 +124,7 @@ contract XVault is ERC20 {
     ITreasury _treasury
   ) 
   public ERC20(
-    string(abi.encodePacked("xend ", ERC20(_token).name())),
+    string(abi.encodePacked("Xend ", ERC20(_token).name())),
     string(abi.encodePacked("xv", ERC20(_token).symbol()))
   ){
 
@@ -218,6 +223,21 @@ contract XVault is ERC20 {
     emit EmergencyShutdown(active);
   }
 
+  /**
+   *  @notice
+   *    Update the withdrawalQueue.
+   *    This may only be called by governance or management.
+   *  @param queue The array of addresses to use as the new withdrawal queue. This is order sensitive.
+   */
+  function setWithdrawalQueue(address[] memory queue) external {
+    require(msg.sender == management || msg.sender == governance);
+    for (uint i = 0; i < queue.length; i++) {
+      assert(strategies[queue[i]].activation > 0);
+    }
+    withdrawalQueue = queue;
+    emit UpdateWithdrawalQueue(queue);
+  }
+
   function getApy() external view returns (uint256) {
     return apy;
   }
@@ -243,7 +263,7 @@ contract XVault is ERC20 {
    * Deposit `_amount` issuing shares to `msg.sender`.
    * If the vault is in emergency shutdown, deposits will not be accepted and this call will fail.
    */
-  function deposit(uint256 _amount) public returns (uint256) {
+  function deposit(uint256 _amount) public nonReentrant returns (uint256) {
     require(emergencyShutdown != true, "in status of Emergency Shutdown");
     uint256 amount = _amount;
     if (amount == 0) {
@@ -256,6 +276,7 @@ contract XVault is ERC20 {
 
     token.safeTransferFrom(msg.sender, address(this), amount);
     tokenBalance = tokenBalance.add(amount);
+    emit Deposit(msg.sender, amount);
 
     return shares;
   }
@@ -317,7 +338,7 @@ contract XVault is ERC20 {
     uint256 maxShare,
     address recipient,
     uint256 maxLoss     // if 1, 0.01%
-  ) public returns (uint256) {
+  ) public nonReentrant returns (uint256) {
     uint256 shares = maxShare;
     if (maxShare == 0) {
       shares = balanceOf(msg.sender);
@@ -359,7 +380,7 @@ contract XVault is ERC20 {
         totalDebt = totalDebt.sub(withdrawn.add(loss));
       }
 
-      require(totalLoss < maxLoss.mul(value.add(totalLoss)).div(MAX_BPS), "revert if totalLoss is more than permitted");
+      require(totalLoss <= maxLoss.mul(value.add(totalLoss)).div(MAX_BPS), "revert if totalLoss is more than permitted");
     }
 
     if (value > token.balanceOf(address(this))) {
@@ -371,6 +392,7 @@ contract XVault is ERC20 {
     
     token.safeTransfer(recipient, value);
     tokenBalance = tokenBalance.sub(value);
+    emit Withdraw(recipient, value);
     
     return value;
   }
@@ -457,6 +479,25 @@ contract XVault is ERC20 {
     assert(strategies[_strategy].activation > 0);
     strategies[_strategy].performanceFee = _performanceFee;
     emit StrategyUpdatePerformanceFee(_strategy, _performanceFee);
+  }
+
+  /**
+   *  @notice
+   *    Add `strategy` to `withdrawalQueue`.
+   *    This may only be called by governance or management.
+   *  @dev
+   *    The Strategy will be appended to `withdrawalQueue`, call `setWithdrawalQueue` to change the order.
+   *  @param _strategy The Strategy to add.
+   */
+  function addStrategyToQueue(address _strategy) external {
+    assert(msg.sender == management || msg.sender == governance);
+    assert(strategies[_strategy].activation > 0);
+    assert(withdrawalQueue.length < MAXIMUM_STRATEGIES);
+    for (uint i = 0; i < withdrawalQueue.length; i++) {
+      assert(withdrawalQueue[i] != _strategy);
+    }
+    withdrawalQueue.push(_strategy);
+    emit StrategyAddedToQueue(_strategy);
   }
 
   /**
@@ -772,7 +813,7 @@ contract XVault is ERC20 {
       // this block is used for getting penny
       // if Strategy is rovoked or exited for emergency, it could have some token that wan't withdrawn
       // this is different from debt
-      return Strategy(msg.sender).estimateTotalAssets();
+      return Strategy(msg.sender).estimatedTotalAssets();
     } else {
       return debt;
     }
