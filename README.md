@@ -1,8 +1,6 @@
 # Documentation
 
-![vault diagram](https://github.com/xendfinance/x-vault/blob/main/public/images/diagram.png)
-
-This is a vault system that leverages the USDT token to get high yield.
+This is a vault system that leverages the USDT/USDC token to get high yield.
 
 User deposits tokens to the vault. vault deposit or withdraw tokens to the strategy contract based on current assets and position of strategy.
 
@@ -22,7 +20,7 @@ Vault has several functions that report the strategy status like position and ge
 
 Whenever funds are deposited to the strategy contract from the vault, it lends assets (USDT) it borrowed  from the cream finance through flash loan then deposited  assets (USDT) from the vault are both deposited together to the venus protocol.
 
-And it borrows assets from venus protocol to repay  cream finance.
+And it borrows assets from venus protocol to repay cream finance.
 
 And after that, adjusting position function is called regularly by the keeper to optimize the high yield.
 
