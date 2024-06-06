@@ -15,17 +15,3 @@ Vault contract manages the funds user deposited
 The deposited assets are in the vault and when signaled, they are deposited to the strategy.
 
 Vault has several functions that report the strategy status like position and get available assets and predict assets.
-
-- Strategy
-
-Whenever funds are deposited to the strategy contract from the vault, it lends assets (USDT) it borrowed  from the cream finance through flash loan then deposited  assets (USDT) from the vault are both deposited together to the venus protocol.
-
-And it borrows assets from venus protocol to repay cream finance.
-
-And after that, adjusting position function is called regularly by the keeper to optimize the high yield.
-
-On the other hand, while lending assets to the venus protocol, venus gives XVS token as a reward so we claim XVS tokens and swap to USDT and deposit to the venus when adjusting position.
-
-And when funds are withdrawn, strategy borrows assets from cream finance using flash loan to repay to the venus protocol and withdraw needed funds from the venus protocol.
-
-And strategy returns the assets to the vault.
